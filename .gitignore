@@ -1,0 +1,23 @@
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# Banco de dados e uploads (dados reais, nunca versionar)
+banco_dados/*.db
+uploads/
+
+# Node / Vite / React
+node_modules/
+dist/
+.vite/
+
+# Variáveis de ambiente / segredos
+.env
+.env.local
+
+# Editor / SO
+.vscode/
+.DS_Store
+Thumbs.db

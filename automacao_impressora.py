@@ -1,49 +1,39 @@
-import win32print
-import win32api
+import subprocess
 
-def enviar_para_impressora(arquivo_caminho, copias, cor, frente_verso, acabamento):
+def mapear_fila_impressora(cor, acabamento):
     """
-    Se comunica com o spooler do Windows e altera as propriedades do driver em tempo de execução.
+    Cruza as opções escolhidas pelo professor para determinar a fila da Konica Minolta.
     """
-    # 1. Captura a impressora padrão do sistema do TI
-    nome_impressora = win32print.GetDefaultPrinter()
-    
-    # 2. Abre a conexão com a impressora para modificar propriedades do Driver (DEVMODE)
-    handle_impressora = win32print.OpenPrinter(nome_impressora)
-    propriedades = win32print.GetPrinter(handle_impressora, 2)
-    devmode = propriedades['pDevMode']
-    
-    # 3. Injeta os parâmetros passados pelo formulário do professor no Driver
-    devmode.Copies = copias
-    
-    # Configuração de Cor vs P/B no driver
-    if cor == "PB":
-        devmode.Color = 1 # 1 costuma ser Monocromático na maioria dos drivers
-    else:
-        devmode.Color = 2 # 2 para Colorido
+    is_colorido = "Colorido" in str(cor)
+    is_grampeado = "Grampeada" in str(acabamento)
 
-    # Configuração de Frente e Verso (Duplex)
-    if frente_verso == "Frente e Verso":
-        devmode.Duplex = 2 # 2 = Duplex pelo lado longo (Vertical/Padrão)
+    if is_colorido:
+        return "Konica_Color_Grampo" if is_grampeado else "Konica_Color_Padrao"
     else:
-        devmode.Duplex = 1 # 1 = Simplex (Apenas frente)
+        return "Konica_PB_Grampo" if is_grampeado else "Konica_PB_Padrao"
 
-    # 4. Atualiza o spooler com as novas configurações do Job atual
-    win32print.SetPrinter(handle_impressora, 2, propriedades, 0)
-    
-    # 5. Executa a ação de impressão silenciosa via Shell do Windows utilizando o Driver modificado
+
+# CORRIGIDO: a função aceitava só 5 parâmetros, mas o app.py sempre chamou
+# com 8 (professor_nome, materia, turma, filepath, copias, cor,
+# frente_verso, acabamento). Isso fazia TODO envio de impressão falhar
+# com um TypeError antes mesmo de chegar à impressora.
+def disparar_impressao_windows(professor_nome, materia, turma, caminho_pdf, copias, cor, frente_verso, acabamento):
+    nome_impressora = mapear_fila_impressora(cor, acabamento)
+
+    # Montamos o comando como uma STRING única, com aspas duplas (") ao
+    # redor do arquivo e da impressora, exatamente como já validado antes.
+    comando = f'PDFtoPrinter.exe "{caminho_pdf}" "{nome_impressora}" /copies={copias}'
+
+    if "Frente e Verso" in str(frente_verso):
+        comando += " /duplex"
+
+    print(f"💻 [Pedido] {professor_nome} — {materia} ({turma})")
+    print(f"💻 [Terminal Windows] Executando: {comando}")
+
     try:
-        # O verbo "printto" envia direto para a impressora especificada sem abrir o Adobe Reader
-        win32api.ShellExecute(
-            0, 
-            "printto", 
-            arquivo_caminho, 
-            f'"{nome_impressora}"', 
-            ".", 
-            0
-        )
-        print(f"Sucesso: {copias} cópias enviadas para {nome_impressora} (Turma: {acabamento}).")
-    except Exception as e:
-        print(f"Erro ao conversar com o driver da impressora: {e}")
-    finally:
-        win32print.ClosePrinter(handle_impressora)
+        subprocess.run(comando, check=True, shell=True)
+        print(f"🖨️ [Sucesso] Enviado para a fila '{nome_impressora}'")
+        return True
+    except subprocess.CalledProcessError:
+        print(f"❌ [Erro] Falha ao comunicar com o driver do Windows. Verifique se a impressora '{nome_impressora}' existe.")
+        return False

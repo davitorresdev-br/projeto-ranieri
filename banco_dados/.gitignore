@@ -1,0 +1,4 @@
+# O arquivo de dados real nunca deve ser versionado/compartilhado.
+*.db
+*.sqlite
+*.sqlite3
