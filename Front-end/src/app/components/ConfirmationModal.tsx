@@ -3,18 +3,19 @@ import { Badge } from "./ui/badge";
 import { Button } from "./ui/button";
 import { SubmissionDraft } from "./SubmissionForm";
 import { COLOR_LABELS, PAGE_MODE_LABELS } from "./types";
-import { Printer } from "lucide-react";
+import { Printer, Loader2 } from "lucide-react";
 
 type Props = {
   draft: SubmissionDraft | null;
+  isSubmitting: boolean;
   onCancel: () => void;
   onConfirm: () => void;
 };
 
-export function ConfirmationModal({ draft, onCancel, onConfirm }: Props) {
+export function ConfirmationModal({ draft, isSubmitting, onCancel, onConfirm }: Props) {
   if (!draft) return null;
   return (
-    <Dialog open={!!draft} onOpenChange={(o) => !o && onCancel()}>
+    <Dialog open={!!draft} onOpenChange={(o) => !o && !isSubmitting && onCancel()}>
       <DialogContent className="max-w-lg">
         <DialogHeader>
           <div className="flex items-center gap-3">
@@ -51,12 +52,22 @@ export function ConfirmationModal({ draft, onCancel, onConfirm }: Props) {
         </div>
 
         <DialogFooter className="gap-2">
-          <Button variant="outline" onClick={onCancel}>Ajustar Dados</Button>
+          <Button variant="outline" onClick={onCancel} disabled={isSubmitting}>
+            Ajustar Dados
+          </Button>
           <Button
             onClick={onConfirm}
-            className="bg-[var(--brand-blue)] hover:bg-[var(--brand-blue-hover)] text-white"
+            disabled={isSubmitting}
+            className="bg-[var(--brand-blue)] hover:bg-[var(--brand-blue-hover)] text-white disabled:opacity-70"
           >
-            Confirmar Envio
+            {isSubmitting ? (
+              <>
+                <Loader2 size={16} className="mr-2 animate-spin" />
+                Aguardando...
+              </>
+            ) : (
+              "Confirmar Envio"
+            )}
           </Button>
         </DialogFooter>
       </DialogContent>

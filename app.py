@@ -1,19 +1,22 @@
 import os
-import secrets
-from flask import Flask, request, jsonify
+from datetime import datetime, time
+from zoneinfo import ZoneInfo
+from dotenv import load_dotenv
+from flask import Flask, request, jsonify, Response
 from flask_cors import CORS
 from werkzeug.utils import secure_filename
-from automacao_impressora import disparar_impressao_windows
 from google.oauth2 import id_token
 from google.auth.transport import requests as google_requests
 
 import banco_dados as db  # Toda a lógica de usuários, senhas e privilégios
                            # de Admin vive em banco_dados/ — não aqui.
 
+# Carrega o arquivo .env (se existir) para dentro de os.environ, ANTES de
+# qualquer os.environ.get() abaixo. Sem essa linha, o .env não tem efeito
+# nenhum — ele é só um arquivo de texto até alguém ler ele.
+load_dotenv()
+
 app = Flask(__name__)
-# Chave aleatória gerada a cada início. Se precisar manter o mesmo valor
-# entre reinícios do servidor, defina a variável de ambiente abaixo.
-app.secret_key = os.environ.get("ACALANTO_SECRET_KEY", secrets.token_hex(32))
 
 CORS(app, resources={
     r"/api/*": {
@@ -23,18 +26,52 @@ CORS(app, resources={
     }
 })
 
-UPLOAD_FOLDER = 'uploads'
-app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
-os.makedirs(UPLOAD_FOLDER, exist_ok=True)
-
 # ID do cliente OAuth do Google Workspace. Não é um segredo (é o mesmo
-# valor que já fica visível no front-end), por isso pode continuar aqui.
-# O Client Secret foi removido: ele não é necessário para validar o token
-# de login (fluxo usado pelo @react-oauth/google) e só representava uma
-# exposição inútil dentro do código-fonte.
-GOOGLE_CLIENT_ID = "314763396953-7imem6nh7na48ujfnbnb1ni79rvpcbn6.apps.googleusercontent.com"
+# valor que já fica visível no front-end), mas fica mais fácil de trocar
+# sem editar código se algum dia mudar — definido no .env como
+# GOOGLE_CLIENT_ID. O valor abaixo é só o padrão, caso o .env não exista.
+GOOGLE_CLIENT_ID = os.environ.get(
+    "GOOGLE_CLIENT_ID",
+    "314763396953-7imem6nh7na48ujfnbnb1ni79rvpcbn6.apps.googleusercontent.com"
+)
+
+# Chave secreta que só o agente de impressão (rodando no computador do
+# colégio) conhece. Protege as rotas /api/agente/* — sem essa chave, elas
+# nunca respondem nada de útil, mesmo se alguém descobrir a URL.
+AGENTE_API_KEY = os.environ.get("AGENTE_API_KEY", "")
+
+# Horário em que a impressora "aceita" trabalhos. Fora dessa faixa, os
+# pedidos ficam represados como Pendente normalmente — o agente local que
+# decide não imprimir fora do expediente (ver agente_impressora.py).
+FUSO_HORARIO = ZoneInfo("America/Sao_Paulo")
+HORARIO_INICIO_IMPRESSAO = time(8, 30)
+HORARIO_FIM_IMPRESSAO = time(17, 30)
 
 db.init_db()
+
+
+def dentro_do_horario_de_impressao():
+    agora = datetime.now(FUSO_HORARIO).time()
+    return HORARIO_INICIO_IMPRESSAO <= agora <= HORARIO_FIM_IMPRESSAO
+
+
+def mensagem_para_envio():
+    if dentro_do_horario_de_impressao():
+        return "Pedido enviado para a fila de impressão com sucesso!"
+    return (
+        "Pedido recebido! Fora do horário de impressão (08:30–17:30), "
+        "ele vai entrar na fila e será impresso a partir das 08:30, "
+        "respeitando a ordem de chegada."
+    )
+
+
+def verificar_chave_agente():
+    """Confere se a requisição trouxe a chave secreta correta do agente
+    de impressão. Sem AGENTE_API_KEY configurado no .env, nega tudo —
+    nunca libera por padrão."""
+    if not AGENTE_API_KEY:
+        return False
+    return request.headers.get("Authorization", "") == f"Bearer {AGENTE_API_KEY}"
 
 # -------------------------------------------------------------------------
 # ROTAS DE AUTENTICAÇÃO
@@ -208,26 +245,81 @@ def api_enviar():
     if not arquivo or not turma:
         return jsonify({"erro": "Campos obrigatórios em falta"}), 400
 
-    # Nome único em disco: evita que dois uploads com o mesmo nome de
-    # arquivo se sobrescrevam (o nome ORIGINAL continua sendo exibido na
-    # fila normalmente — só o arquivo salvo fisicamente é renomeado).
+    # O PDF vai direto para o banco (como BLOB), não para um caminho em
+    # disco — no Discloud não há garantia de que um arquivo salvo em
+    # disco sobreviva a um redeploy ou reinício do container.
     nome_original = secure_filename(arquivo.filename)
-    nome_em_disco = f"{secrets.token_hex(5)}_{nome_original}"
-    filepath = os.path.join(app.config['UPLOAD_FOLDER'], nome_em_disco)
-    arquivo.save(filepath)
+    conteudo_pdf = arquivo.read()
 
     conn = db.get_connection()
     cursor = conn.cursor()
     cursor.execute('''
-        INSERT INTO pedidos (professor_nome, materia, turma, copias, cor, frente_verso, acabamento, arquivo_nome, arquivo_path)
+        INSERT INTO pedidos (professor_nome, materia, turma, copias, cor, frente_verso, acabamento, arquivo_nome, arquivo_conteudo)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-    ''', (user_name, materia, turma, copias, cor, frente_verso, acabamento, nome_original, filepath))
+    ''', (user_name, materia, turma, copias, cor, frente_verso, acabamento, nome_original, conteudo_pdf))
     conn.commit()
     conn.close()
 
-    disparar_impressao_windows(user_name, materia, turma, filepath, copias, cor, frente_verso, acabamento)
+    # Note que NÃO chamamos mais a impressão por aqui — quem imprime agora
+    # é o agente local, consultando as rotas abaixo.
+    return jsonify({"status": "sucesso", "mensagem": mensagem_para_envio()})
 
-    return jsonify({"status": "sucesso", "mensagem": "Pedido integrado com sucesso!"})
+
+# -------------------------------------------------------------------------
+# ROTAS DO AGENTE DE IMPRESSÃO (rodando no computador do colégio)
+# -------------------------------------------------------------------------
+@app.route('/api/agente/pendentes', methods=['GET'])
+def agente_pendentes():
+    if not verificar_chave_agente():
+        return jsonify({"erro": "Não autorizado"}), 401
+
+    conn = db.get_connection()
+    cursor = conn.cursor()
+    cursor.execute('''
+        SELECT id, professor_nome, materia, turma, copias, cor, frente_verso, acabamento
+        FROM pedidos WHERE status = 'Pendente' ORDER BY id ASC
+    ''')
+    pedidos = [dict(linha) for linha in cursor.fetchall()]
+    conn.close()
+
+    return jsonify({"pedidos": pedidos})
+
+
+@app.route('/api/agente/arquivo/<int:pedido_id>', methods=['GET'])
+def agente_arquivo(pedido_id):
+    if not verificar_chave_agente():
+        return jsonify({"erro": "Não autorizado"}), 401
+
+    conn = db.get_connection()
+    cursor = conn.cursor()
+    cursor.execute('SELECT arquivo_conteudo FROM pedidos WHERE id = ?', (pedido_id,))
+    linha = cursor.fetchone()
+    conn.close()
+
+    if not linha or linha["arquivo_conteudo"] is None:
+        return jsonify({"erro": "Arquivo não encontrado"}), 404
+
+    return Response(linha["arquivo_conteudo"], mimetype="application/pdf")
+
+
+@app.route('/api/agente/status/<int:pedido_id>', methods=['POST'])
+def agente_atualizar_status(pedido_id):
+    if not verificar_chave_agente():
+        return jsonify({"erro": "Não autorizado"}), 401
+
+    dados = request.json or {}
+    novo_status = dados.get("status")
+
+    if novo_status not in ("Imprimindo", "Concluído", "Erro"):
+        return jsonify({"erro": "Status inválido"}), 400
+
+    conn = db.get_connection()
+    cursor = conn.cursor()
+    cursor.execute('UPDATE pedidos SET status = ? WHERE id = ?', (novo_status, pedido_id))
+    conn.commit()
+    conn.close()
+
+    return jsonify({"status": "sucesso"})
 
 
 if __name__ == '__main__':

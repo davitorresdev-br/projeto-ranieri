@@ -29,7 +29,7 @@ export function InfoSidebar() {
           <p className="mt-3 opacity-90" style={{ lineHeight: 1.5 }}>
             Segunda a Sexta-feira
             <br />
-            <span style={{ fontSize: "1.25rem", fontWeight: 700 }}>07:00 às 19:00</span>
+            <span style={{ fontSize: "1.25rem", fontWeight: 700 }}>08:30 às 17:30</span>
           </p>
 
           <div className="h-px bg-white/20 my-5" />

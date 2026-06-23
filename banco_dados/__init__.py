@@ -55,7 +55,7 @@ def init_db():
             frente_verso TEXT NOT NULL,
             acabamento TEXT NOT NULL,
             arquivo_nome TEXT NOT NULL,
-            arquivo_path TEXT NOT NULL,
+            arquivo_conteudo BLOB NOT NULL,
             status TEXT DEFAULT 'Pendente'
         )
     ''')

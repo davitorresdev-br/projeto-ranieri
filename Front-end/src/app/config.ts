@@ -1,15 +1,15 @@
 // ---------------------------------------------------------------------
 // Endereço do servidor (Backend Flask) na rede do colégio.
 // ---------------------------------------------------------------------
-// Mude SOMENTE este valor para apontar o app para o computador que está
-// rodando o app.py. Use o IP local da máquina servidora (NUNCA
-// "localhost"), assim os professores conseguem acessar de qualquer sala
-// ou computador ligado à mesma rede do colégio.
+// Em vez de fixar um único IP, descobrimos automaticamente qual
+// endereço o navegador usou para abrir a página (window.location.hostname)
+// e montamos a URL da API a partir dele. Assim o sistema funciona ao
+// mesmo tempo pela rede cabeada e pela rede Wi-Fi — cada pessoa acessa
+// pelo IP que conseguir alcançar, e a chamada da API usa esse mesmo IP
+// automaticamente, sem precisar editar este arquivo de novo.
 //
-// Como descobrir o IP da máquina servidora no Windows:
-//   1. Abra o "Prompt de Comando" (cmd)
-//   2. Digite "ipconfig" e pressione Enter
-//   3. Procure por "Endereço IPv4" na rede usada pelo colégio
-//
-// Depois de alterar este valor, reinicie o "npm run dev".
-export const API_BASE_URL = "http://192.168.0.133:8080";
+// Único requisito: o computador servidor (o que roda o app.py) precisa
+// estar conectado na(s) mesma(s) rede(s) que as pessoas vão usar para
+// acessar, com as portas 5173 e 8080 liberadas no Firewall do Windows
+// para os perfis de rede correspondentes.
+export const API_BASE_URL = `http://${window.location.hostname}:8080`;

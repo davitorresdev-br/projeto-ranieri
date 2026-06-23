@@ -21,6 +21,7 @@ export default function App() {
   const [jobs, setJobs] = useState<PrintJob[]>([]);
   const [draft, setDraft] = useState<SubmissionDraft | null>(null);
   const [formResetKey, setFormResetKey] = useState(0);
+  const [isSubmitting, setIsSubmitting] = useState(false);
 
   // 1. VERIFICA SESSÃO
   useEffect(() => {
@@ -74,8 +75,10 @@ export default function App() {
 
   // 3. ENVIAR DADOS REAIS PARA O BACKEND
   const handleConfirm = async () => {
-    if (!draft) return;
-    
+    // Trava contra clique duplo: se já está enviando, ignora cliques extras.
+    if (!draft || isSubmitting) return;
+    setIsSubmitting(true);
+
     const session = getStoredSession();
     const nomeRemetente = session ? session.name : currentUser;
 
@@ -92,6 +95,7 @@ export default function App() {
       formData.append("arquivo", draft.file);
     } else {
       toast.error("É obrigatório anexar um ficheiro PDF.");
+      setIsSubmitting(false);
       return; // Interrompe o envio se não houver ficheiro
     }
 
@@ -104,7 +108,9 @@ export default function App() {
       const result = await response.json();
 
       if (response.ok && result.status === "sucesso") {
-        toast.success("Documento enviado para a fila de impressão com sucesso!");
+        // Mostra a mensagem que o backend mandou (pode avisar sobre o
+        // horário de impressão), em vez de um texto fixo.
+        toast.success(result.mensagem || "Documento enviado para a fila de impressão com sucesso!");
         setDraft(null);
         setFormResetKey((k) => k + 1);
         setView("queue");
@@ -115,6 +121,8 @@ export default function App() {
     } catch (error) {
       console.error("Erro de rede:", error);
       toast.error("Erro ao comunicar com o servidor da impressora.");
+    } finally {
+      setIsSubmitting(false);
     }
   };
 
@@ -225,6 +233,7 @@ export default function App() {
 
       <ConfirmationModal
         draft={draft}
+        isSubmitting={isSubmitting}
         onCancel={() => setDraft(null)}
         onConfirm={handleConfirm}
       />
