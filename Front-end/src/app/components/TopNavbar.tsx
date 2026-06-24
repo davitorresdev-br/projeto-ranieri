@@ -9,9 +9,9 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "./ui/dropdown-menu";
-import { ChevronDown, LogOut, Printer, Send } from "lucide-react";
+import { ChevronDown, LogOut, Printer, Send, Users } from "lucide-react";
 
-type View = "dashboard" | "queue";
+type View = "dashboard" | "queue" | "users";
 
 type Props = {
   view: View;
@@ -60,6 +60,8 @@ export function TopNavbar({ view, setView, role, setRole, isSuperAdmin, currentU
         <nav className="flex items-center gap-1 ml-4">
           <NavLink id="dashboard" label="Enviar Impressão" icon={<Send size={16} />} />
           <NavLink id="queue" label="Fila de Impressão" icon={<Printer size={16} />} badge={pendingCount} />
+          {/* Gestão de contas só faz sentido — e só é permitida — para a T.I. */}
+          {role === "TI" && <NavLink id="users" label="Usuários" icon={<Users size={16} />} />}
         </nav>
 
         <div className="flex-1" />

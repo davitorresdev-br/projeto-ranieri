@@ -1,12 +1,11 @@
 import os
+import calendar
 from datetime import datetime, time
 from zoneinfo import ZoneInfo
 from dotenv import load_dotenv
 from flask import Flask, request, jsonify, Response
 from flask_cors import CORS
 from werkzeug.utils import secure_filename
-from google.oauth2 import id_token
-from google.auth.transport import requests as google_requests
 
 import banco_dados as db  # Toda a lógica de usuários, senhas e privilégios
                            # de Admin vive em banco_dados/ — não aqui.
@@ -26,15 +25,6 @@ CORS(app, resources={
     }
 })
 
-# ID do cliente OAuth do Google Workspace. Não é um segredo (é o mesmo
-# valor que já fica visível no front-end), mas fica mais fácil de trocar
-# sem editar código se algum dia mudar — definido no .env como
-# GOOGLE_CLIENT_ID. O valor abaixo é só o padrão, caso o .env não exista.
-GOOGLE_CLIENT_ID = os.environ.get(
-    "GOOGLE_CLIENT_ID",
-    "314763396953-7imem6nh7na48ujfnbnb1ni79rvpcbn6.apps.googleusercontent.com"
-)
-
 # Chave secreta que só o agente de impressão (rodando no computador do
 # colégio) conhece. Protege as rotas /api/agente/* — sem essa chave, elas
 # nunca respondem nada de útil, mesmo se alguém descobrir a URL.
@@ -48,6 +38,31 @@ HORARIO_INICIO_IMPRESSAO = time(8, 30)
 HORARIO_FIM_IMPRESSAO = time(17, 30)
 
 db.init_db()
+
+
+def limpar_pdfs_no_startup():
+    """Ao subir o servidor, opcionalmente apaga o PDF pesado de pedidos
+    concluídos antigos — segurando o tamanho do banco sem ninguém precisar
+    lembrar. Só age se ACALANTO_RETENCAO_PDF_DIAS for maior que zero; o
+    registro leve no histórico nunca é tocado. Falhas aqui não derrubam o
+    app (a impressão é mais importante que a faxina do disco)."""
+    try:
+        dias = int(os.environ.get("ACALANTO_RETENCAO_PDF_DIAS", "0"))
+    except (TypeError, ValueError):
+        dias = 0
+
+    if dias <= 0:
+        return
+
+    try:
+        apagados = db.limpar_pdfs_antigos(dias=dias)
+        if apagados:
+            print(f"[Manutenção] {apagados} PDF(s) com mais de {dias} dias foram apagados (histórico preservado).")
+    except Exception as e:
+        print(f"[Manutenção] Não foi possível limpar PDFs antigos: {e}")
+
+
+limpar_pdfs_no_startup()
 
 
 def dentro_do_horario_de_impressao():
@@ -72,6 +87,15 @@ def verificar_chave_agente():
     if not AGENTE_API_KEY:
         return False
     return request.headers.get("Authorization", "") == f"Bearer {AGENTE_API_KEY}"
+
+
+def usuario_eh_ti(nome):
+    """Confere, pelo nome, se a pessoa é do Departamento de T.I. (ou Admin).
+    Mesma lógica de confiança usada em /api/fila: o papel REAL vem sempre do
+    banco, nunca do que o front-end alega. Usado para proteger relatórios e
+    a limpeza de PDFs, que são ações do Departamento — não do professor."""
+    role_real, super_admin = db.papel_real_e_super_admin(nome)
+    return role_real == db.ROLE_TI or super_admin
 
 # -------------------------------------------------------------------------
 # ROTAS DE AUTENTICAÇÃO
@@ -103,41 +127,39 @@ def login_credenciais():
         return jsonify({"status": "erro", "erro": "Erro interno no servidor."}), 500
 
 
-@app.route('/api/login/google', methods=['POST'])
-def login_google_backend():
+# NOTA: o login com Google Workspace foi removido por enquanto — sem um
+# domínio próprio e HTTPS, o OAuth do Google não dá para validar com
+# segurança. O acesso é só local (usuário/senha) e auto-cadastro. A camada
+# de banco do Workspace (tabela usuarios_workspace e
+# db.obter_ou_cadastrar_workspace) foi mantida intacta para reativar fácil
+# quando houver domínio/HTTPS: basta restaurar esta rota e o botão no
+# front-end.
+
+
+@app.route('/api/registrar', methods=['POST'])
+def api_registrar():
+    """Auto-cadastro de conta local. Cria SEMPRE como Coordenador — virar
+    T.I. é decisão do Departamento, feita no painel de gestão. Em caso de
+    sucesso já devolve os dados de sessão, para a pessoa entrar direto."""
     try:
         dados = request.json or {}
-        token_jwt = dados.get('token')
+        username = dados.get('username', '')
+        senha = dados.get('password', '')
+        nome = dados.get('nome_completo') or dados.get('name') or ''
 
-        if not token_jwt:
-            return jsonify({"status": "erro", "erro": "Token de autenticação ausente."}), 400
+        resultado = db.registrar_usuario_local(username, senha, nome)
 
-        # VALIDAÇÃO GOOGLE: clock_skew=60 previne erros de relógio desincronizado
-        id_info = id_token.verify_oauth2_token(
-            token_jwt,
-            google_requests.Request(),
-            GOOGLE_CLIENT_ID,
-            clock_skew_in_seconds=60
-        )
+        if not resultado["ok"]:
+            return jsonify({"status": "erro", "erro": resultado["erro"]}), 400
 
-        email_google = id_info.get('email', '').lower().strip()
-        nome_google = id_info.get('name', 'Usuário Workspace')
-
-        usuario = db.obter_ou_cadastrar_workspace(email_google, nome_google)
-
+        usuario = resultado["usuario"]
         return jsonify({
             "status": "sucesso",
             "name": usuario["name"],
             "role": usuario["role"],
             "isSuperAdmin": usuario["isSuperAdmin"],
         })
-
-    except ValueError as e:
-        erro_exato = str(e)
-        print(f"Motivo real da rejeição do Google: {erro_exato}")
-        return jsonify({"status": "erro", "erro": f"Recusado pelo Google: {erro_exato}"}), 401
-    except Exception as e:
-        print(f"Erro crítico no servidor durante OAuth: {str(e)}")
+    except Exception:
         return jsonify({"status": "erro", "erro": "Erro interno no servidor."}), 500
 
 # -------------------------------------------------------------------------
@@ -179,7 +201,7 @@ def api_fila():
         cursor.execute("SELECT COUNT(*) FROM pedidos WHERE status='Concluído'")
         concluidos = cursor.fetchone()[0]
 
-        cursor.execute("SELECT id, professor_nome, materia, turma, arquivo_nome, copias, status FROM pedidos ORDER BY id DESC")
+        cursor.execute("SELECT id, professor_nome, materia, turma, arquivo_nome, copias, status, criado_em, impresso_em, erro_em FROM pedidos ORDER BY id DESC")
     else:
         cursor.execute("SELECT COUNT(*) FROM pedidos WHERE status='Pendente' AND professor_nome=?", (user_name,))
         pendentes = cursor.fetchone()[0]
@@ -188,7 +210,7 @@ def api_fila():
         cursor.execute("SELECT COUNT(*) FROM pedidos WHERE status='Concluído' AND professor_nome=?", (user_name,))
         concluidos = cursor.fetchone()[0]
 
-        cursor.execute("SELECT id, professor_nome, materia, turma, arquivo_nome, copias, status FROM pedidos WHERE professor_nome=? ORDER BY id DESC", (user_name,))
+        cursor.execute("SELECT id, professor_nome, materia, turma, arquivo_nome, copias, status, criado_em, impresso_em, erro_em FROM pedidos WHERE professor_nome=? ORDER BY id DESC", (user_name,))
 
     linhas_banco = cursor.fetchall()
     conn.close()
@@ -210,7 +232,12 @@ def api_fila():
             "arquivo": linha[4],
             "copias": merge_int_or_str_if_needed(linha[5]),
             "posicao": posicao_fila,
-            "status": status_job
+            "status": status_job,
+            # Carimbos de data/hora (ISO 8601, horário de Brasília). Podem
+            # vir nulos em pedidos antigos, anteriores a este recurso.
+            "enviado_em": linha[7],
+            "impresso_em": linha[8],
+            "erro_em": linha[9],
         })
 
     return jsonify({
@@ -251,14 +278,13 @@ def api_enviar():
     nome_original = secure_filename(arquivo.filename)
     conteudo_pdf = arquivo.read()
 
-    conn = db.get_connection()
-    cursor = conn.cursor()
-    cursor.execute('''
-        INSERT INTO pedidos (professor_nome, materia, turma, copias, cor, frente_verso, acabamento, arquivo_nome, arquivo_conteudo)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-    ''', (user_name, materia, turma, copias, cor, frente_verso, acabamento, nome_original, conteudo_pdf))
-    conn.commit()
-    conn.close()
+    # criar_pedido já carimba a data/hora de ENVIO (criado_em). É esse
+    # registro que permite, depois, confirmar "você mandou às 14h32 de
+    # ontem" em qualquer questionamento de professor.
+    db.criar_pedido(
+        user_name, materia, turma, copias, cor, frente_verso,
+        acabamento, nome_original, conteudo_pdf
+    )
 
     # Note que NÃO chamamos mais a impressão por aqui — quem imprime agora
     # é o agente local, consultando as rotas abaixo.
@@ -313,13 +339,130 @@ def agente_atualizar_status(pedido_id):
     if novo_status not in ("Imprimindo", "Concluído", "Erro"):
         return jsonify({"erro": "Status inválido"}), 400
 
-    conn = db.get_connection()
-    cursor = conn.cursor()
-    cursor.execute('UPDATE pedidos SET status = ? WHERE id = ?', (novo_status, pedido_id))
-    conn.commit()
-    conn.close()
+    # atualizar_status_pedido carimba a data/hora do que aconteceu
+    # (impresso_em ou erro_em) e, quando o pedido termina, grava uma cópia
+    # leve e permanente no histórico — mesmo que o PDF seja apagado depois.
+    encontrado = db.atualizar_status_pedido(pedido_id, novo_status)
+
+    if not encontrado:
+        return jsonify({"erro": "Pedido não encontrado"}), 404
 
     return jsonify({"status": "sucesso"})
+
+
+# -------------------------------------------------------------------------
+# GESTÃO DE CONTAS LOCAIS (só Departamento de T.I.)
+# -------------------------------------------------------------------------
+@app.route('/api/usuarios', methods=['GET'])
+def api_listar_usuarios():
+    """Lista as contas locais para o painel de gestão. Só T.I."""
+    user_name = request.args.get('user_name', '').strip()
+    if not usuario_eh_ti(user_name):
+        return jsonify({"erro": "Acesso restrito ao Departamento de T.I."}), 403
+    return jsonify({"usuarios": db.listar_usuarios_locais()})
+
+
+@app.route('/api/usuarios/cargo', methods=['POST'])
+def api_definir_cargo():
+    """Promove/rebaixa uma conta entre Coordenador e T.I. Só T.I."""
+    dados = request.json or {}
+    user_name = (dados.get('user_name') or '').strip()
+    if not usuario_eh_ti(user_name):
+        return jsonify({"erro": "Acesso restrito ao Departamento de T.I."}), 403
+
+    alvo = dados.get('username', '')
+    novo_role = (dados.get('role') or '').strip().upper()
+
+    resultado = db.definir_cargo_usuario_local(alvo, novo_role)
+    if not resultado["ok"]:
+        return jsonify({"erro": resultado["erro"]}), 400
+    return jsonify({"status": "sucesso"})
+
+
+@app.route('/api/usuarios/remover', methods=['POST'])
+def api_remover_usuario():
+    """Remove uma conta local. Só T.I."""
+    dados = request.json or {}
+    user_name = (dados.get('user_name') or '').strip()
+    if not usuario_eh_ti(user_name):
+        return jsonify({"erro": "Acesso restrito ao Departamento de T.I."}), 403
+
+    alvo = dados.get('username', '')
+
+    resultado = db.remover_usuario_local(alvo)
+    if not resultado["ok"]:
+        return jsonify({"erro": resultado["erro"]}), 400
+    return jsonify({"status": "sucesso"})
+
+
+# -------------------------------------------------------------------------
+# RELATÓRIOS E MANUTENÇÃO (só Departamento de T.I.)
+# -------------------------------------------------------------------------
+def _intervalo_do_mes(mes):
+    """Converte um 'AAAA-MM' (ex.: '2025-10') no primeiro e último dia
+    daquele mês ('2025-10-01', '2025-10-31'). Retorna (None, None) se o
+    formato for inválido — o relatório simplesmente não filtra por data."""
+    try:
+        ano, num_mes = mes.split("-")
+        ano, num_mes = int(ano), int(num_mes)
+        ultimo_dia = calendar.monthrange(ano, num_mes)[1]
+        return f"{ano:04d}-{num_mes:02d}-01", f"{ano:04d}-{num_mes:02d}-{ultimo_dia:02d}"
+    except (ValueError, AttributeError, calendar.IllegalMonthError):
+        return None, None
+
+
+@app.route('/api/relatorio', methods=['GET'])
+def api_relatorio():
+    """Contagem de cópias e pedidos por professor num período. Responde
+    'quantas cópias o professor X mandou esse mês?' e 'quanto a escola
+    imprimiu em outubro?'. Restrito ao Departamento de T.I.
+
+    Parâmetros (query string):
+      user_name : nome de quem pede (validado como T.I. no banco).
+      mes       : 'AAAA-MM' — atalho que já vira o mês inteiro. Opcional.
+      inicio    : 'AAAA-MM-DD' — usado se 'mes' não for informado. Opcional.
+      fim       : 'AAAA-MM-DD' — idem. Opcional.
+      base      : 'criado' (data de envio, padrão) ou 'impresso'.
+    """
+    user_name = request.args.get('user_name', '').strip()
+
+    if not usuario_eh_ti(user_name):
+        return jsonify({"erro": "Acesso restrito ao Departamento de T.I."}), 403
+
+    mes = request.args.get('mes', '').strip()
+    if mes:
+        inicio, fim = _intervalo_do_mes(mes)
+    else:
+        inicio = request.args.get('inicio', '').strip() or None
+        fim = request.args.get('fim', '').strip() or None
+
+    base = request.args.get('base', 'criado').strip().lower()
+    if base not in ('criado', 'impresso'):
+        base = 'criado'
+
+    relatorio = db.relatorio_contagem(inicio=inicio, fim=fim, base=base)
+    relatorio["periodo"] = {"inicio": inicio, "fim": fim, "base": base}
+    return jsonify(relatorio)
+
+
+@app.route('/api/admin/limpar-pdfs', methods=['POST'])
+def api_limpar_pdfs():
+    """Apaga os PDFs pesados de pedidos já concluídos e antigos, preservando
+    o registro leve no histórico. Serve para o banco não crescer sem limite.
+    Restrito ao Departamento de T.I."""
+    dados = request.json or {}
+    user_name = (dados.get('user_name') or '').strip()
+
+    if not usuario_eh_ti(user_name):
+        return jsonify({"erro": "Acesso restrito ao Departamento de T.I."}), 403
+
+    try:
+        dias = int(dados.get('dias', 7))
+    except (TypeError, ValueError):
+        dias = 7
+
+    quantidade = db.limpar_pdfs_antigos(dias=max(dias, 0))
+    return jsonify({"status": "sucesso", "pdfs_apagados": quantidade})
 
 
 if __name__ == '__main__':
