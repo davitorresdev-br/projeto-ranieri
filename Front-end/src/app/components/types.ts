@@ -1,6 +1,6 @@
 export type Role = "COORDENADOR" | "TI";
 
-export type JobStatus = "Pendente" | "Imprimindo" | "Concluído";
+export type JobStatus = "Pendente" | "Imprimindo" | "Concluído" | "Erro";
 export type ColorMode = "PB" | "Colorida";
 export type PageMode = "Frente" | "FrenteVerso";
 export type Finishing = "Normal" | "Grampeada";
@@ -17,6 +17,12 @@ export type PrintJob = {
   finishing: Finishing;
   status: JobStatus;
   submittedAt: number;
+  // Carimbos vindos do backend (ISO 8601, horário de Brasília). Opcionais
+  // porque pedidos antigos, anteriores ao registro de data/hora, podem não
+  // tê-los. São o que responde "quando exatamente isso foi enviado/impresso".
+  submittedAtIso?: string | null;
+  printedAtIso?: string | null;
+  errorAtIso?: string | null;
 };
 
 export type LocalUser = {
@@ -26,22 +32,10 @@ export type LocalUser = {
   role: Role;
 };
 
-export type GoogleAccount = {
-  email: string;
-  name: string;
-  role: Role;
-};
-
 export const LOCAL_USERS: LocalUser[] = [
   { username: "coordenador", password: "acalanto2024", name: "Juliana Ferreira", role: "COORDENADOR" },
   { username: "ti.carlos", password: "acalanto2024", name: "Carlos Mendes", role: "TI" },
   { username: "ana.paula", password: "acalanto2024", name: "Ana Paula Rocha", role: "COORDENADOR" },
-];
-
-export const GOOGLE_ACCOUNTS: GoogleAccount[] = [
-  { email: "juliana.ferreira@acalanto.edu.br", name: "Juliana Ferreira", role: "COORDENADOR" },
-  { email: "carlos.mendes@acalanto.edu.br", name: "Carlos Mendes", role: "TI" },
-  { email: "ana.paula.rocha@acalanto.edu.br", name: "Ana Paula Rocha", role: "COORDENADOR" },
 ];
 
 export const ROLE_LABELS: Record<Role, string> = {

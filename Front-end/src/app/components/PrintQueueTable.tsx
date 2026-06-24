@@ -18,7 +18,25 @@ const STATUS_STYLES: Record<JobStatus, string> = {
   Pendente: "bg-amber-100 text-amber-800 border-amber-200",
   Imprimindo: "bg-blue-100 text-blue-800 border-blue-200",
   Concluído: "bg-emerald-100 text-emerald-800 border-emerald-200",
+  Erro: "bg-red-100 text-red-800 border-red-200",
 };
+
+// Formata um carimbo ISO 8601 (ex.: "2026-06-23T14:35:09-03:00") como
+// "23/06 14:35", sempre no horário de Brasília — assim a hora exibida é a
+// mesma para qualquer pessoa, independentemente do fuso do computador dela.
+// Retorna "—" quando não há data (pedidos antigos, sem registro).
+function formatarDataHora(iso?: string | null): string {
+  if (!iso) return "—";
+  const data = new Date(iso);
+  if (isNaN(data.getTime())) return "—";
+  return data.toLocaleString("pt-BR", {
+    day: "2-digit",
+    month: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    timeZone: "America/Sao_Paulo",
+  });
+}
 
 function StatusBadge({ status }: { status: JobStatus }) {
   return (
@@ -87,6 +105,7 @@ export function PrintQueueTable({ jobs, role, currentUser, onCycleStatus, onRepr
               <TableHead>Arquivo</TableHead>
               <TableHead className="text-center">Cópias</TableHead>
               <TableHead>{isTeacher ? "Sua Posição na Fila" : "Fila"}</TableHead>
+              <TableHead>Enviado em</TableHead>
               <TableHead>Status</TableHead>
               {!isTeacher && <TableHead className="text-right">Ações</TableHead>}
             </TableRow>
@@ -122,7 +141,22 @@ export function PrintQueueTable({ jobs, role, currentUser, onCycleStatus, onRepr
                     </span>
                   )}
                 </TableCell>
-                <TableCell><StatusBadge status={job.status} /></TableCell>
+                <TableCell className="text-slate-600 whitespace-nowrap" style={{ fontSize: "0.8rem" }}>
+                  {formatarDataHora(job.submittedAtIso)}
+                </TableCell>
+                <TableCell>
+                  <StatusBadge status={job.status} />
+                  {job.status === "Concluído" && job.printedAtIso && (
+                    <div className="text-slate-400 mt-1" style={{ fontSize: "0.7rem" }}>
+                      Impresso {formatarDataHora(job.printedAtIso)}
+                    </div>
+                  )}
+                  {job.status === "Erro" && (
+                    <div className="text-red-500 mt-1" style={{ fontSize: "0.7rem" }}>
+                      Falhou {formatarDataHora(job.errorAtIso)}
+                    </div>
+                  )}
+                </TableCell>
                 {!isTeacher && (
                   <TableCell className="text-right">
                     <div className="flex justify-end gap-2">

@@ -8,10 +8,12 @@ import { InfoSidebar } from "./components/InfoSidebar";
 import { ConfirmationModal } from "./components/ConfirmationModal";
 import { QueueMetricsCards } from "./components/QueueMetricsCards";
 import { PrintQueueTable } from "./components/PrintQueueTable";
+import { ReportPanel } from "./components/ReportPanel";
+import { UserManagementPanel } from "./components/UserManagementPanel";
 import { JobStatus, PrintJob, Role } from "./components/types";
 import { API_BASE_URL } from "./config";
 
-type View = "login" | "dashboard" | "queue";
+type View = "login" | "dashboard" | "queue" | "users";
 
 export default function App() {
   const [view, setView] = useState<View>("login");
@@ -59,11 +61,15 @@ export default function App() {
           turma: p.materia_turma.split(' — ')[1] || "-",
           fileName: p.arquivo,
           copies: p.copias,
-          color: "Preto e Branco", 
+          color: "Preto e Branco",
           pageMode: "Apenas Frente",
           finishing: "Nenhum",
           status: p.status as JobStatus,
-          submittedAt: Date.now(), 
+          submittedAt: Date.now(),
+          // Carimbos reais do backend (podem ser nulos em pedidos antigos).
+          submittedAtIso: p.enviado_em ?? null,
+          printedAtIso: p.impresso_em ?? null,
+          errorAtIso: p.erro_em ?? null,
         }));
 
         setJobs(filaFormatada);
@@ -83,7 +89,7 @@ export default function App() {
     const nomeRemetente = session ? session.name : currentUser;
 
     const formData = new FormData();
-    formData.append("user_name", nomeRemetente); // <--- ENVIA O NOME REAL LOGADO PELO GOOGLE OU LOCAL!
+    formData.append("user_name", nomeRemetente); // <--- ENVIA O NOME REAL DA CONTA LOCAL LOGADA
     formData.append("materia", draft.subject);
     formData.append("turma", draft.turma); 
     formData.append("copias", draft.copies.toString());
@@ -151,6 +157,11 @@ export default function App() {
     if (!isSuperAdmin) {
       toast.error("Apenas o Administrador pode alternar entre os modos.");
       return;
+    }
+    // A aba "Usuários" só existe no modo T.I.; ao sair dele, volta para a
+    // fila para não deixar a tela vazia.
+    if (novoRole !== "TI" && view === "users") {
+      setView("queue");
     }
     setRole(novoRole);
     carregarFila(novoRole);
@@ -227,6 +238,25 @@ export default function App() {
               onCycleStatus={cycleStatus}
               onReprint={reprint}
             />
+
+            {/* Relatório de cópias por coordenador — só o Departamento de
+                T.I. enxerga (e o backend também confirma isso). */}
+            {isAdmin && <ReportPanel currentUser={currentUser} />}
+          </div>
+        )}
+
+        {view === "users" && isAdmin && (
+          <div className="space-y-6">
+            <div>
+              <h1 style={{ fontSize: "1.75rem", fontWeight: 700, color: "#0f172a" }}>
+                Usuários
+              </h1>
+              <p className="text-slate-500 mt-1">
+                Contas locais do servidor. Promova, rebaixe ou remova conforme a necessidade.
+              </p>
+            </div>
+
+            <UserManagementPanel currentUser={currentUser} />
           </div>
         )}
       </main>
